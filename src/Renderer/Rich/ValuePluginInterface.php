@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * The MIT License (MIT)
  *
@@ -25,9 +27,9 @@
 
 namespace Kint\Renderer\Rich;
 
-use Kint\Zval\Value;
+use Kint\Value\AbstractValue;
 
 interface ValuePluginInterface extends PluginInterface
 {
-    public function renderValue(Value $o);
+    public function renderValue(AbstractValue $v): ?string;
 }

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * The MIT License (MIT)
  *
@@ -26,9 +28,11 @@
 namespace Kint\Test;
 
 use Kint\CallFinder;
-use PHPUnit\Framework\TestCase;
 
-class CallFinderTest extends TestCase
+/**
+ * @coversNothing
+ */
+class CallFinderTest extends KintTestCase
 {
     public function sourceProvider()
     {
@@ -49,11 +53,15 @@ class CallFinderTest extends TestCase
                             'path' => '$wat',
                             'name' => '$wat',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$woot[$wat] + 4',
                             'name' => '$woot[...] + 4',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -75,6 +83,8 @@ class CallFinderTest extends TestCase
                             'path' => '$var',
                             'name' => '$var',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -96,16 +106,22 @@ class CallFinderTest extends TestCase
                             'path' => '[]',
                             'name' => '[]',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '[ ]',
                             'name' => '[]',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '[ 1 ]',
                             'name' => '[...]',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -127,16 +143,22 @@ class CallFinderTest extends TestCase
                             'path' => '1',
                             'name' => '1',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$b',
                             'name' => '$b',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$gamma',
                             'name' => '$gamma',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -178,6 +200,8 @@ class CallFinderTest extends TestCase
                             'path' => '$val',
                             'name' => '$val',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -188,11 +212,15 @@ class CallFinderTest extends TestCase
                             'path' => '[ ]',
                             'name' => '[]',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$_SERVER["REMOTE_ADDR"]',
                             'name' => '$_SERVER[...]',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -218,11 +246,15 @@ class CallFinderTest extends TestCase
                             'path' => '$val',
                             'name' => '$val',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$_SERVER[$val]',
                             'name' => '$_SERVER[...]',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -230,10 +262,16 @@ class CallFinderTest extends TestCase
         ];
 
         $data['one on multiple lines end'] = $data['one on multiple lines start'];
-        $data['one on multiple lines end']['line'] = 7;
+        $data['one on multiple lines end']['line'] = 6;
+        if (KINT_PHP82) {
+            $data['one on multiple lines end']['result'] = [];
+        }
 
         $data['one on multiple lines mid'] = $data['one on multiple lines start'];
         $data['one on multiple lines mid']['line'] = 5;
+        if (KINT_PHP82) {
+            $data['one on multiple lines mid']['result'] = [];
+        }
 
         $data['nested calls'] = [
             '<?php
@@ -253,11 +291,15 @@ class CallFinderTest extends TestCase
                             'path' => '@test($val)',
                             'name' => '@test(...)',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$_SERVER[$val]',
                             'name' => '$_SERVER[...]',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -268,15 +310,24 @@ class CallFinderTest extends TestCase
                             'path' => '$val',
                             'name' => '$val',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
             ],
         ];
+        if (KINT_PHP82) {
+            \array_shift($data['nested calls']['result']);
+        }
 
         $data['nested calls, single matching line'] = $data['nested calls'];
         $data['nested calls, single matching line']['line'] = 5;
-        unset($data['nested calls, single matching line']['result'][1]);
+        if (KINT_PHP82) {
+            $data['nested calls, single matching line']['result'] = [];
+        } else {
+            unset($data['nested calls, single matching line']['result'][1]);
+        }
 
         $data['multiple line params'] = [
             '<?php
@@ -286,7 +337,7 @@ class CallFinderTest extends TestCase
                 $c
             );
             ',
-            'line' => 4,
+            'line' => 3,
             'function' => 'test',
             'result' => [
                 [
@@ -297,6 +348,8 @@ class CallFinderTest extends TestCase
                 $c',
                             'name' => '$a + $b + $c',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -317,6 +370,120 @@ class CallFinderTest extends TestCase
                             'path' => '$var [ "key" ] +  /* test */  $var2  +$var3',
                             'name' => '$var[...] + $var2 +$var3',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $data['bstring types'] = [
+            '<?php
+
+            test(
+                \'\',
+                "",
+                \'value\',
+                "value",
+                \'$value\',
+                "$value",
+                b\'\',
+                b"",
+                b\'value\',
+                b"value",
+                b\'$value\',
+                b"$value",
+            );',
+            'line' => 3,
+            'function' => 'test',
+            'result' => [
+                [
+                    'modifiers' => [],
+                    'parameters' => [
+                        [
+                            'path' => "''",
+                            'name' => "''",
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => '""',
+                            'name' => '""',
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => "'value'",
+                            'name' => "'...'",
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => '"value"',
+                            'name' => '"..."',
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => "'\$value'",
+                            'name' => "'...'",
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => '"$value"',
+                            'name' => '"..."',
+                            'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => "b''",
+                            'name' => "b''",
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => 'b""',
+                            'name' => 'b""',
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => "b'value'",
+                            'name' => "b'...'",
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => 'b"value"',
+                            'name' => 'b"..."',
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => "b'\$value'",
+                            'name' => "b'...'",
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => 'b"$value"',
+                            'name' => 'b"..."',
+                            'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -357,12 +524,16 @@ d(
     ((((((())))))),
     true,
     TRUE,
+    false,
+    fAlSe,
+    null,
+    NuLL,
     test::TEST,
     \\test::TEST,
     test :: TEST,
     \\test :: TEST
 );',
-            'line' => 10,
+            'line' => 3,
             'function' => 'd',
             'result' => [
                 [
@@ -372,171 +543,267 @@ d(
                             'path' => 'true?$_SERVER:array()',
                             'name' => 'true?$_SERVER:array()',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x=1',
                             'name' => '$x=1',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x+1',
                             'name' => '$x+1',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x==1',
                             'name' => '$x==1',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x-1',
                             'name' => '$x-1',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x*1',
                             'name' => '$x*1',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x/1',
                             'name' => '$x/1',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x%1',
                             'name' => '$x%1',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x++',
                             'name' => '$x++',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x--',
                             'name' => '$x--',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x**4',
                             'name' => '$x**4',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '~$x',
                             'name' => '~$x',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x instanceof bltest',
                             'name' => '$x instanceof bltest',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '!$x',
                             'name' => '!$x',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$x%1',
                             'name' => '$x%1',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$_SERVER["HTTP_HOST"]',
                             'name' => '$_SERVER[...]',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$_SERVER[ "HTTP_HOST" ]',
                             'name' => '$_SERVER[...]',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$_SERVER [ "HTTP_HOST" ]',
                             'name' => '$_SERVER[...]',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '[] + []',
                             'name' => '[] + []',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => 'new DateTime()',
                             'name' => 'new DateTime()',
-                            'expression' => true,
+                            'expression' => !KINT_PHP84,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => 'clone $db',
                             'name' => 'clone $db',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => 'array()',
                             'name' => 'array()',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => 'array( )',
                             'name' => 'array()',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '"string"',
                             'name' => '"..."',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '[]',
                             'name' => '[]',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '[ ]',
                             'name' => '[]',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '((((((("woot")))))))',
                             'name' => '(...)',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '((((((()))))))',
                             'name' => '(...)',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => 'true',
                             'name' => 'true',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => 'TRUE',
                             'name' => 'TRUE',
                             'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => 'false',
+                            'name' => 'false',
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => 'fAlSe',
+                            'name' => 'fAlSe',
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => 'null',
+                            'name' => 'null',
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => 'NuLL',
+                            'name' => 'NuLL',
+                            'expression' => false,
+                            'literal' => true,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => 'test::TEST',
                             'name' => 'test::TEST',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '\\test::TEST',
                             'name' => '\\test::TEST',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => 'test :: TEST',
                             'name' => 'test::TEST',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '\\test :: TEST',
                             'name' => '\\test::TEST',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -557,6 +824,8 @@ d(
                             'path' => '"string {$var} string"',
                             'name' => '"..."',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -577,6 +846,8 @@ d(
                             'path' => '"string ${var} string"',
                             'name' => '"..."',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -597,6 +868,8 @@ d(
                             'path' => '"string $var string"',
                             'name' => '"..."',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -617,6 +890,8 @@ d(
                             'path' => '$val',
                             'name' => '$val',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -654,7 +929,7 @@ d(
             test(
                 // Nothing here, but multiple tokens
             );',
-            'line' => 4,
+            'line' => 3,
             'function' => 'test',
             'result' => [
                 [
@@ -667,7 +942,7 @@ d(
         $data['non-function tokens'] = [
             '<?php
 
-            echo test::test; test($val);',
+            echo test::test($a); $test2->test($b); test3::test; test($c);',
             'line' => 3,
             'function' => 'test',
             'result' => [
@@ -675,9 +950,11 @@ d(
                     'modifiers' => [],
                     'parameters' => [
                         [
-                            'path' => '$val',
-                            'name' => '$val',
+                            'path' => '$c',
+                            'name' => '$c',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -698,6 +975,8 @@ d(
                             'path' => '$val',
                             'name' => '$val',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -718,6 +997,8 @@ d(
                             'path' => '$val',
                             'name' => '$val',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -738,6 +1019,8 @@ d(
                             'path' => '(function () { return "woot"; })()',
                             'name' => '(...)()',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -758,11 +1041,44 @@ d(
                             'path' => '$a',
                             'name' => '$a',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '$b',
                             'name' => '$b',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $data['namespaced method'] = [
+            '<?php
+
+            X\\Y::test($a, $b);',
+            'line' => 3,
+            'function' => ['X\\Y', 'test'],
+            'result' => [
+                [
+                    'modifiers' => [],
+                    'parameters' => [
+                        [
+                            'path' => '$a',
+                            'name' => '$a',
+                            'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => '$b',
+                            'name' => '$b',
+                            'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -783,11 +1099,15 @@ d(
                             'path' => '$args',
                             'name' => '$args',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                         [
                             'path' => '...$args',
                             'name' => '...$args',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -808,6 +1128,8 @@ d(
                             'path' => '$args->prop',
                             'name' => '$args->prop',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -828,6 +1150,8 @@ d(
                             'path' => '$args->{$propname}',
                             'name' => '$args->{...}',
                             'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -846,8 +1170,36 @@ d(
                     'parameters' => [
                         [
                             'path' => 'function ($a) { return $a * 2; }',
-                            'name' => 'function (...){...}',
+                            'name' => 'function (...) {...}',
                             'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $data['inline closure with use'] = [
+            '<?php
+
+test(function ($a) use ($b)    {
+    return $a * 2;
+});',
+            'line' => 3,
+            'function' => 'test',
+            'result' => [
+                [
+                    'modifiers' => [],
+                    'parameters' => [
+                        [
+                            'path' => 'function ($a) use ($b)    {
+    return $a * 2;
+}',
+                            'name' => 'function (...) use (...) {...}',
+                            'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
@@ -863,87 +1215,115 @@ d(
             'result' => [],
         ];
 
-        if (KINT_PHP73) {
-            $data['trailing comma'] = [
-                '<?php
+        $data['trailing comma'] = [
+            '<?php
 
-                test(
-                    $a,
-                    $b,
-                );',
-                'line' => 3,
-                'function' => 'test',
-                'result' => [
-                    [
-                        'modifiers' => [],
-                        'parameters' => [
-                            [
-                                'path' => '$a',
-                                'name' => '$a',
-                                'expression' => false,
-                            ],
-                            [
-                                'path' => '$b',
-                                'name' => '$b',
-                                'expression' => false,
-                            ],
+            test(
+                $a,
+                $b,
+            );',
+            'line' => 3,
+            'function' => 'test',
+            'result' => [
+                [
+                    'modifiers' => [],
+                    'parameters' => [
+                        [
+                            'path' => '$a',
+                            'name' => '$a',
+                            'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
+                        ],
+                        [
+                            'path' => '$b',
+                            'name' => '$b',
+                            'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
-            ];
-        }
+            ],
+        ];
 
-        if (KINT_PHP74) {
-            $data['null_assign_op'] = [
-                '<?php
+        $data['arrow closure'] = [
+            '<?php
 
-                test($a ??= "1234");',
-                'line' => 3,
-                'function' => 'test',
-                'result' => [
-                    [
-                        'modifiers' => [],
-                        'parameters' => [
-                            [
-                                'path' => '$a ??= "1234"',
-                                'name' => '$a ??= "..."',
-                                'expression' => true,
-                            ],
+            test(fn ($a) => $a * $b);',
+            'line' => 3,
+            'function' => 'test',
+            'result' => [
+                [
+                    'modifiers' => [],
+                    'parameters' => [
+                        [
+                            'path' => 'fn ($a) => $a * $b',
+                            'name' => 'fn (...) => $a * $b',
+                            'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
-            ];
+            ],
+        ];
 
-            $data['short_functions'] = [
-                '<?php
+        $data['null_assign_op'] = [
+            '<?php
 
-                test(($t) => test($t));',
-                'line' => 3,
-                'function' => 'test',
-                'result' => [
-                    [
-                        'modifiers' => [],
-                        'parameters' => [
-                            [
-                                'path' => '($t) => test($t)',
-                                'name' => '(...) => test(...)',
-                                'expression' => true,
-                            ],
-                        ],
-                    ],
-                    [
-                        'modifiers' => [],
-                        'parameters' => [
-                            [
-                                'path' => '$t',
-                                'name' => '$t',
-                                'expression' => false,
-                            ],
+            test($a ??= "1234");',
+            'line' => 3,
+            'function' => 'test',
+            'result' => [
+                [
+                    'modifiers' => [],
+                    'parameters' => [
+                        [
+                            'path' => '$a ??= "1234"',
+                            'name' => '$a ??= "..."',
+                            'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
                         ],
                     ],
                 ],
-            ];
-        }
+            ],
+        ];
+
+        $data['nested arrow closure'] = [
+            '<?php
+
+            test(fn($t) => test($t));',
+            'line' => 3,
+            'function' => 'test',
+            'result' => [
+                [
+                    'modifiers' => [],
+                    'parameters' => [
+                        [
+                            'path' => 'fn($t) => test($t)',
+                            'name' => 'fn(...) => test(...)',
+                            'expression' => true,
+                            'literal' => false,
+                            'new_without_parens' => false,
+                        ],
+                    ],
+                ],
+                [
+                    'modifiers' => [],
+                    'parameters' => [
+                        [
+                            'path' => '$t',
+                            'name' => '$t',
+                            'expression' => false,
+                            'literal' => false,
+                            'new_without_parens' => false,
+                        ],
+                    ],
+                ],
+            ],
+        ];
 
         if (KINT_PHP80) {
             $data['attributes'] = [
@@ -959,7 +1339,9 @@ d(
                             [
                                 'path' => 'new #[TestAttribute] class {}',
                                 'name' => 'new #[...] class {}',
-                                'expression' => true,
+                                'expression' => !KINT_PHP84,
+                                'literal' => false,
+                                'new_without_parens' => false,
                             ],
                         ],
                     ],
@@ -979,7 +1361,9 @@ d(
                             [
                                 'path' => 'new #[TestAttribute(#[TestAttributeChild])] class {}',
                                 'name' => 'new #[...] class {}',
-                                'expression' => true,
+                                'expression' => !KINT_PHP84,
+                                'literal' => false,
+                                'new_without_parens' => false,
                             ],
                         ],
                     ],
@@ -1000,6 +1384,8 @@ d(
                                 'path' => '$args?->prop',
                                 'name' => '$args?->prop',
                                 'expression' => false,
+                                'literal' => false,
+                                'new_without_parens' => false,
                             ],
                         ],
                     ],
@@ -1018,8 +1404,263 @@ d(
                         'parameters' => [
                             [
                                 'path' => 'match ($a) { 0 => false, default => true }',
-                                'name' => 'match (...){...}',
+                                'name' => 'match (...) {...}',
                                 'expression' => true,
+                                'literal' => false,
+                                'new_without_parens' => false,
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+
+            $data['named params'] = [
+                '<?php
+
+                test(abc(paramName: $value));',
+                'line' => 3,
+                'function' => 'test',
+                'result' => [
+                    [
+                        'modifiers' => [],
+                        'parameters' => [
+                            [
+                                'path' => 'abc(paramName: $value)',
+                                'name' => 'abc(...)',
+                                'expression' => false,
+                                'literal' => false,
+                                'new_without_parens' => false,
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+        }
+
+        if (KINT_PHP81) {
+            $data['ignore firstclass callables'] = [
+                '<?php
+
+                $x = test(...); test($a);',
+                'line' => 3,
+                'function' => 'test',
+                'result' => [
+                    [
+                        'modifiers' => [],
+                        'parameters' => [
+                            [
+                                'path' => '$a',
+                                'name' => '$a',
+                                'expression' => false,
+                                'literal' => false,
+                                'new_without_parens' => false,
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+        }
+
+        if (KINT_PHP82) {
+            $data['dnf types'] = [
+                '<?php
+
+                test(function ((A & B) | C | null $test) {});',
+                'line' => 3,
+                'function' => 'test',
+                'result' => [
+                    [
+                        'modifiers' => [],
+                        'parameters' => [
+                            [
+                                'path' => 'function ((A & B) | C | null $test) {}',
+                                'name' => 'function (...) {}',
+                                'expression' => true,
+                                'literal' => false,
+                                'new_without_parens' => false,
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+        }
+
+        if (KINT_PHP83) {
+            $data['dynamic class constant'] = [
+                '<?php
+
+                test(ABC::{$name});',
+                'line' => 3,
+                'function' => 'test',
+                'result' => [
+                    [
+                        'modifiers' => [],
+                        'parameters' => [
+                            [
+                                'path' => 'ABC::{$name}',
+                                'name' => 'ABC::{...}',
+                                'expression' => false,
+                                'literal' => false,
+                                'new_without_parens' => false,
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+        }
+
+        if (KINT_PHP84) {
+            $data['call from property hook'] = [
+                '<?php
+
+                class TestClass {
+                    public private(set) string $test_property {
+                        set (string $value) {
+                            test("Setter called:", $value);
+                            $this->test_property = $value;
+                        }
+
+                        get => $this->test_property;
+                    }
+                }',
+                'line' => 6,
+                'function' => 'test',
+                'result' => [
+                    [
+                        'modifiers' => [],
+                        'parameters' => [
+                            [
+                                'path' => '"Setter called:"',
+                                'name' => '"..."',
+                                'expression' => false,
+                                'literal' => true,
+                                'new_without_parens' => false,
+                            ],
+                            [
+                                'path' => '$value',
+                                'name' => '$value',
+                                'expression' => false,
+                                'literal' => false,
+                                'new_without_parens' => false,
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+
+            $data['new without parens call'] = [
+                '<?php
+
+                new X()->y($value);',
+                'line' => 3,
+                'function' => ['X', 'y'],
+                'result' => [],
+            ];
+
+            $data['call on new without parens'] = [
+                '<?php
+
+                test(new X($v1)->y);',
+                'line' => 3,
+                'function' => 'test',
+                'result' => [
+                    [
+                        'modifiers' => [],
+                        'parameters' => [
+                            [
+                                'path' => 'new X($v1)->y',
+                                'name' => 'new X(...)->y',
+                                'expression' => false,
+                                'literal' => false,
+                                'new_without_parens' => false,
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+
+            $data['call on new without parens no calls'] = [
+                '<?php
+
+                test(new     X);',
+                'line' => 3,
+                'function' => 'test',
+                'result' => [
+                    [
+                        'modifiers' => [],
+                        'parameters' => [
+                            [
+                                'path' => 'new     X',
+                                'name' => 'new X',
+                                'expression' => false,
+                                'literal' => false,
+                                'new_without_parens' => true,
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+
+            $data['call on new without parens expression classname'] = [
+                '<?php
+
+                test(new ("X"));',
+                'line' => 3,
+                'function' => 'test',
+                'result' => [
+                    [
+                        'modifiers' => [],
+                        'parameters' => [
+                            [
+                                'path' => 'new ("X")',
+                                'name' => 'new (...)',
+                                'expression' => false,
+                                'literal' => false,
+                                'new_without_parens' => true,
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+
+            $data['call on new without parens variable classname'] = [
+                '<?php
+
+                test(new $x);',
+                'line' => 3,
+                'function' => 'test',
+                'result' => [
+                    [
+                        'modifiers' => [],
+                        'parameters' => [
+                            [
+                                'path' => 'new $x',
+                                'name' => 'new $x',
+                                'expression' => false,
+                                'literal' => false,
+                                'new_without_parens' => true,
+                            ],
+                        ],
+                    ],
+                ],
+            ];
+
+            $data['call on new without parens junk before new'] = [
+                '<?php
+
+                test(/*test*/new $x);',
+                'line' => 3,
+                'function' => 'test',
+                'result' => [
+                    [
+                        'modifiers' => [],
+                        'parameters' => [
+                            [
+                                'path' => 'new $x',
+                                'name' => 'new $x',
+                                'expression' => false,
+                                'literal' => false,
+                                'new_without_parens' => true,
                             ],
                         ],
                     ],
@@ -1032,6 +1673,7 @@ d(
 
     /**
      * @dataProvider sourceProvider
+     *
      * @covers \Kint\CallFinder
      *
      * @param string $source

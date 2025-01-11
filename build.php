@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * The MIT License (MIT)
  *
@@ -28,11 +30,16 @@ use Symfony\Component\Finder\Finder;
 
 require_once __DIR__.'/vendor/autoload.php';
 
-\mkdir(__DIR__.'/build');
+if (!\file_exists(__DIR__.'/build')) {
+    \mkdir(__DIR__.'/build');
+}
 
 $outpath = __DIR__.'/build/kint.phar';
 
-\unlink($outpath);
+if (\file_exists($outpath)) {
+    \unlink($outpath);
+}
+
 $phar = new Phar($outpath);
 $phar->setStub('<?php
 /*
@@ -43,14 +50,31 @@ require \'phar://\'.__FILE__.\'/init_phar.php\'; __HALT_COMPILER();');
 
 $pathlen = \strlen(__DIR__);
 
-foreach (Finder::create()->files()->in([__DIR__.'/src', __DIR__.'/resources/compiled'])->sortByName() as $file) {
-    $local = \substr($file, $pathlen);
-    $phar->addFile($file, $local);
+$filesToArchive = Finder::create()
+    ->files()
+    ->in([__DIR__.'/src', __DIR__.'/resources/compiled'])
+    ->append([
+        __DIR__.'/init_phar.php',
+        __DIR__.'/init.php',
+        __DIR__.'/init_helpers.php',
+    ])
+    ->sortByName();
+
+if (KINT_WIN) {
+    $filesToArchive->sort(static function (SplFileInfo $a, SplFileInfo $b) {
+        $a = \strtr($a->getRealPath() ?: $a->getPathname(), '\\', '/');
+        $b = \strtr($b->getRealPath() ?: $b->getPathname(), '\\', '/');
+
+        return \strcmp($a, $b);
+    });
 }
 
-$phar->addFile(__DIR__.'/init_phar.php', '/init_phar.php');
-$phar->addFile(__DIR__.'/init.php', '/init.php');
-$phar->addFile(__DIR__.'/init_helpers.php', '/init_helpers.php');
+foreach ($filesToArchive as $file) {
+    $local = \substr((string) $file, $pathlen);
+    $phar->addFile((string) $file, $local);
+    $pi = new PharFileInfo('phar://'.$outpath.$local);
+    $pi->chmod(0644);
+}
 
 $phar = new Timestamps($outpath);
 $phar->updateTimestamps();

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * The MIT License (MIT)
  *
@@ -26,76 +28,164 @@
 namespace Kint\Test\Parser;
 
 use Kint\Parser\Parser;
+use Kint\Parser\ProxyPlugin;
 use Kint\Parser\TracePlugin;
-use Kint\Zval\Value;
-use PHPUnit\Framework\TestCase;
+use Kint\Test\Fixtures\TestClass;
+use Kint\Test\KintTestCase;
+use Kint\Value\ArrayValue;
+use Kint\Value\Context\BaseContext;
+use Kint\Value\FixedWidthValue;
+use Kint\Value\InstanceValue;
+use Kint\Value\Representation\SourceRepresentation;
+use Kint\Value\TraceFrameValue;
+use Kint\Value\TraceValue;
 
-class TracePluginTest extends TestCase
+/**
+ * @coversNothing
+ */
+class TracePluginTest extends KintTestCase
 {
-    protected $blacklist_stash;
-
     /**
-     * @covers \Kint\Parser\TracePlugin::parse
+     * @covers \Kint\Parser\TracePlugin::parseComplete
      */
     public function testParse()
     {
         $p = new Parser();
-        $p->addPlugin(new TracePlugin());
+        $p->addPlugin(new TracePlugin($p));
 
-        $bt = \debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+        $bt = (new TestClass())->getMeATrace();
 
-        $o = Value::blank();
+        foreach ($bt as $index => &$frame) {
+            if ($index > 0) {
+                unset($frame['object']);
+            }
+            unset($frame['args']);
+        }
+
+        $o = new BaseContext('$bt');
 
         $o = $p->parse($bt, $o);
 
-        $this->assertContains('trace', $o->hints);
-        $this->assertInstanceOf('Kint\\Zval\\TraceValue', $o);
-        $this->assertInstanceOf('Kint\\Zval\\TraceFrameValue', $o->value->contents[0]);
+        $this->assertSame('trace', $o->getHint());
+        $this->assertInstanceOf(TraceValue::class, $o);
+        $this->assertInstanceOf(TraceFrameValue::class, $o->getContents()[0]);
+        $this->assertInstanceOf(InstanceValue::class, $o->getContents()[0]->getObject());
     }
 
     /**
-     * @covers \Kint\Parser\TracePlugin::parse
+     * @covers \Kint\Parser\TracePlugin::parseComplete
+     */
+    public function testParseDepths()
+    {
+        $p = new Parser(3);
+        $p->addPlugin(new TracePlugin($p));
+
+        $base = new BaseContext('$bt');
+        $bt = \debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+
+        $o = $p->parse($bt, clone $base);
+
+        $this->assertSame('trace', $o->getHint());
+        $this->assertInstanceOf(TraceValue::class, $o);
+        $this->assertInstanceOf(TraceFrameValue::class, $o->getContents()[0]);
+
+        $p->setDepthLimit(2);
+
+        $o = $p->parse($bt, clone $base);
+
+        $this->assertNotSame('trace', $o->getHint());
+        $this->assertNotInstanceOf(TraceValue::class, $o);
+        $this->assertNotInstanceOf(TraceFrameValue::class, $o->getContents()[0]);
+    }
+
+    /**
+     * Tests to ensure frames that have modified mismatching names compared to
+     * the original array indices are not included in the backtrace.
+     *
+     * @covers \Kint\Parser\TracePlugin::parseComplete
      */
     public function testParseMismatch()
     {
         $bt = \debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-        $b = Value::blank();
+        $b = new BaseContext('$bt');
         $parser = new Parser();
-        $plugin = new TracePlugin();
+        $plugin = new TracePlugin($parser);
 
         $incorrect = $parser->parse($bt, clone $b);
-        $incorrect->value->contents[0]->name = 'newName';
+
+        $incorrect->getContents()[0]->getContext()->name = 'newName';
         $parser->addPlugin($plugin);
-        $plugin->parse($bt, $incorrect, Parser::TRIGGER_SUCCESS);
+        $incorrect = $plugin->parseComplete($bt, $incorrect, Parser::TRIGGER_SUCCESS);
 
         \array_shift($bt);
         $correct = $parser->parse($bt, clone $b);
 
-        foreach ($correct->value->contents as $frame) {
-            ++$frame->name;
+        foreach ($correct->getContents() as $frame) {
+            ++$frame->getContext()->name;
         }
 
-        $this->assertEquals($correct, $incorrect);
+        $this->assertEquals(
+            \array_values($correct->getContents()),
+            \array_values($incorrect->getContents())
+        );
     }
 
     /**
-     * @covers \Kint\Parser\TracePlugin::parse
+     * Tests to ensure frames are skipped if somehow not parsed as ArrayValue.
+     *
+     * @covers \Kint\Parser\TracePlugin::parseComplete
+     */
+    public function testParseSubMismatch()
+    {
+        $bt = \debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+        $b = new BaseContext('$bt');
+        $parser = new Parser();
+        $plugin = new TracePlugin($parser);
+
+        $change_value = true;
+
+        $pp = new ProxyPlugin(
+            ['array'],
+            Parser::TRIGGER_COMPLETE,
+            function (&$var, $o) use (&$change_value) {
+                if ($o->getContext()->getDepth() > 0 && $change_value) {
+                    $change_value = false;
+
+                    return new FixedWidthValue($o->getContext(), null);
+                }
+
+                return $o;
+            }
+        );
+
+        $original = $parser->parse($bt, clone $b);
+
+        $parser->addPlugin($pp);
+        $parser->addPlugin($plugin);
+
+        $changed = $parser->parse($bt, clone $b);
+
+        $this->assertNotEquals($original, $changed);
+        $this->assertCount($original->getSize() - 1, $changed->getContents());
+    }
+
+    /**
+     * @covers \Kint\Parser\TracePlugin::parseComplete
      */
     public function testParseNoValue()
     {
-        $p = new TracePlugin();
+        $p = new TracePlugin($this->createStub(Parser::class));
 
-        $b = Value::blank();
-        $o = clone $b;
+        $b = new ArrayValue(new BaseContext('$v'), 0, []);
         $v = [];
 
-        $p->parse($v, $o, Parser::TRIGGER_SUCCESS);
+        $o = $p->parseComplete($v, clone $b, Parser::TRIGGER_SUCCESS);
 
         $this->assertEquals($b, $o);
     }
 
     /**
-     * @covers \Kint\Parser\TracePlugin::parse
+     * @covers \Kint\Parser\TracePlugin::parseComplete
      */
     public function testParseBlacklist()
     {
@@ -104,23 +194,26 @@ class TracePluginTest extends TestCase
         \array_shift($shortbt);
 
         $p = new Parser();
-        $p->addPlugin(new TracePlugin());
+        $p->addPlugin(new TracePlugin($p));
 
-        $b = Value::blank();
+        $b = new BaseContext('$shortbt');
 
         $o = $p->parse($shortbt, clone $b);
 
-        foreach ($o->value->contents as $frame) {
-            ++$frame->name;
+        foreach ($o->getContents() as $frame) {
+            ++$frame->getContext()->name;
         }
 
         TracePlugin::$blacklist[] = [__CLASS__, __FUNCTION__];
 
-        $this->assertEquals($o->value, $p->parse($bt, clone $b)->value);
+        $this->assertEquals(
+            \array_values($o->getContents()),
+            \array_values($p->parse($bt, clone $b)->getContents())
+        );
     }
 
     /**
-     * @covers \Kint\Parser\TracePlugin::parse
+     * @covers \Kint\Parser\TracePlugin::parseComplete
      * @covers \Kint\Parser\TracePlugin::normalizePaths
      */
     public function testParsePathBlacklist()
@@ -134,19 +227,19 @@ class TracePluginTest extends TestCase
         }
 
         $p = new Parser();
-        $p->addPlugin(new TracePlugin());
+        $p->addPlugin(new TracePlugin($p));
 
-        $b = Value::blank();
+        $b = new BaseContext('$shortbt');
 
         $o = $p->parse($shortbt, clone $b);
 
         TracePlugin::$path_blacklist[] = __FILE__;
 
-        $this->assertEquals($o->value, $p->parse($bt, clone $b)->value);
+        $this->assertEquals($o->getContents(), $p->parse($bt, clone $b)->getContents());
     }
 
     /**
-     * @covers \Kint\Parser\TracePlugin::parse
+     * @covers \Kint\Parser\TracePlugin::parseComplete
      * @covers \Kint\Parser\TracePlugin::normalizePaths
      */
     public function testParsePathBlacklistFolder()
@@ -154,35 +247,72 @@ class TracePluginTest extends TestCase
         $bt = \debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
 
         $p = new Parser();
-        $p->addPlugin(new TracePlugin());
+        $p->addPlugin(new TracePlugin($p));
 
-        $b = Value::blank();
+        $b = new BaseContext('$bt');
+
+        $blacklist = \realpath(__DIR__.'/../../vendor');
 
         $hasVendor = false;
         $o = $p->parse($bt, clone $b);
-        foreach ($o->value->contents as $frame) {
-            foreach ($frame->value->contents as $prop) {
-                if ('file' == $prop->name && false !== \strpos($prop->value->contents, '/vendor/')) {
-                    $hasVendor = true;
-                    break 2;
-                }
+        foreach ($o->getContents() as $frame) {
+            if (0 === \strpos($frame->getFile(), $blacklist)) {
+                $hasVendor = true;
+                break;
             }
         }
         $this->assertTrue($hasVendor);
 
-        TracePlugin::$path_blacklist[] = __DIR__.'/../../vendor';
+        TracePlugin::$path_blacklist[] = $blacklist;
 
         $hasVendor = false;
         $o = $p->parse($bt, clone $b);
-        foreach ($o->value->contents as $frame) {
-            foreach ($frame->value->contents as $prop) {
-                if ('file' == $prop->name && false !== \strpos($prop->value->contents, '/vendor/')) {
-                    $hasVendor = true;
-                    break 2;
-                }
+        foreach ($o->getContents() as $frame) {
+            if (0 === \strpos($frame->getFile(), $blacklist)) {
+                $hasVendor = true;
+                break;
             }
         }
         $this->assertFalse($hasVendor);
+    }
+
+    /**
+     * @covers \Kint\Parser\TracePlugin::parseComplete
+     */
+    public function testParseBadValue()
+    {
+        $p = new Parser();
+        $t = new TracePlugin($p);
+        $p->addPlugin($t);
+
+        $v = 123;
+        $b = new BaseContext('$v');
+        $o = new FixedWidthValue($b, $v);
+
+        $out = $t->parseComplete($v, $o, Parser::TRIGGER_SUCCESS);
+
+        $this->assertSame($o, $out);
+    }
+
+    /**
+     * @covers \Kint\Parser\TracePlugin::parseComplete
+     */
+    public function testParseBadSource()
+    {
+        $p = new Parser();
+        $p->addPlugin(new TracePlugin($p));
+        $b = new BaseContext('$bt');
+        $bt = \debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+
+        $o = $p->parse($bt, clone $b);
+
+        $this->assertInstanceOf(SourceRepresentation::class, $o->getContents()[0]->getRepresentation('source'));
+
+        $bt[0]['line'] = 999999999;
+
+        $o = $p->parse($bt, clone $b);
+
+        $this->assertNull($o->getContents()[0]->getRepresentation('source'));
     }
 
     /**
@@ -191,23 +321,9 @@ class TracePluginTest extends TestCase
      */
     public function testHooks()
     {
-        $p = new TracePlugin();
+        $p = new TracePlugin($this->createStub(Parser::class));
 
         $this->assertSame(['array'], $p->getTypes());
         $this->assertSame(Parser::TRIGGER_SUCCESS, $p->getTriggers());
-    }
-
-    protected function kintUp()
-    {
-        parent::kintUp();
-
-        $this->blacklist_stash = TracePlugin::$blacklist;
-    }
-
-    protected function kintDown()
-    {
-        parent::kintDown();
-
-        TracePlugin::$blacklist = $this->blacklist_stash;
     }
 }

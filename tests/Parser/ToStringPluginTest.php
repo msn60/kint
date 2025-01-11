@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * The MIT License (MIT)
  *
@@ -25,13 +27,19 @@
 
 namespace Kint\Test\Parser;
 
+use Exception;
 use Kint\Parser\Parser;
 use Kint\Parser\ToStringPlugin;
+use Kint\Test\Fixtures\BadToStringClass;
 use Kint\Test\KintTestCase;
-use Kint\Zval\Value;
-use SplFileInfo;
+use Kint\Value\Context\BaseContext;
+use Kint\Value\Representation\ValueRepresentation;
+use Kint\Value\StringValue;
 use stdClass;
 
+/**
+ * @coversNothing
+ */
 class ToStringPluginTest extends KintTestCase
 {
     /**
@@ -39,7 +47,7 @@ class ToStringPluginTest extends KintTestCase
      */
     public function testGetTypes()
     {
-        $p = new ToStringPlugin();
+        $p = new ToStringPlugin($this->createStub(Parser::class));
 
         $this->assertSame(['object'], $p->getTypes());
     }
@@ -49,37 +57,46 @@ class ToStringPluginTest extends KintTestCase
      */
     public function testGetTriggers()
     {
-        $p = new ToStringPlugin();
+        $p = new ToStringPlugin($this->createStub(Parser::class));
 
         $this->assertSame(Parser::TRIGGER_SUCCESS, $p->getTriggers());
     }
 
     /**
-     * @covers \Kint\Parser\ToStringPlugin::parse
+     * @covers \Kint\Parser\ToStringPlugin::parseComplete
      */
     public function testParse()
     {
         $p = new Parser();
-        $p->addPlugin(new ToStringPlugin());
-        $b = Value::blank('$v', '$v');
+        $p->addPlugin(new ToStringPlugin($p));
+        $b = new BaseContext('$v');
+        $b->access_path = '$v';
 
-        $v = new SplFileInfo(__FILE__);
+        $v = new Exception('There was an error');
 
         $obj = $p->parse($v, clone $b);
         $rep = $obj->getRepresentation('tostring');
 
+        $this->assertInstanceOf(ValueRepresentation::class, $rep);
+        $this->assertInstanceOf(StringValue::class, $rep->getValue());
+        $this->assertSame((string) $v, $rep->getValue()->getValue());
+        $this->assertSame('(string) $v', $rep->getValue()->getContext()->getAccessPath());
+
+        $b->access_path = null;
+        $obj = $p->parse($v, clone $b);
+        $rep = $obj->getRepresentation('tostring');
         $this->assertNotNull($rep);
-        $this->assertSame(__FILE__, $rep->contents);
+        $this->assertNull($rep->getValue()->getContext()->getAccessPath());
     }
 
     /**
-     * @covers \Kint\Parser\ToStringPlugin::parse
+     * @covers \Kint\Parser\ToStringPlugin::parseComplete
      */
     public function testParseNormalValue()
     {
         $p = new Parser();
-        $p->addPlugin(new ToStringPlugin());
-        $b = Value::blank('$v', '$v');
+        $p->addPlugin(new ToStringPlugin($p));
+        $b = new BaseContext('$v');
 
         $v = new stdClass();
 
@@ -89,21 +106,37 @@ class ToStringPluginTest extends KintTestCase
     }
 
     /**
-     * @covers \Kint\Parser\ToStringPlugin::parse
+     * @covers \Kint\Parser\ToStringPlugin::parseComplete
+     */
+    public function testParseBuggyValue()
+    {
+        $p = new Parser();
+        $p->addPlugin(new ToStringPlugin($p));
+        $b = new BaseContext('$v');
+
+        $v = new BadToStringClass();
+
+        $obj = $p->parse($v, clone $b);
+
+        $this->assertNull($obj->getRepresentation('tostring'));
+    }
+
+    /**
+     * @covers \Kint\Parser\ToStringPlugin::parseComplete
      */
     public function testParseBlacklist()
     {
         $p = new Parser();
-        $p->addPlugin(new ToStringPlugin());
-        $b = Value::blank('$v', '$v');
+        $p->addPlugin(new ToStringPlugin($p));
+        $b = new BaseContext('$v');
 
-        $v = new SplFileInfo(__FILE__);
+        $v = new Exception('There was an error');
 
         $obj = $p->parse($v, clone $b);
 
         $this->assertNotNull($obj->getRepresentation('tostring'));
 
-        ToStringPlugin::$blacklist[] = 'SplFileInfo';
+        ToStringPlugin::$blacklist[] = Exception::class;
 
         $obj = $p->parse($v, clone $b);
 

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * The MIT License (MIT)
  *
@@ -29,10 +31,16 @@ use Kint\Parser\BlacklistPlugin;
 use Kint\Parser\Parser;
 use Kint\Parser\ProxyPlugin;
 use Kint\Test\Fixtures\ChildTestClass;
+use Kint\Test\Fixtures\TestClass;
 use Kint\Test\KintTestCase;
-use Kint\Zval\Value;
+use Kint\Value\AbstractValue;
+use Kint\Value\Context\BaseContext;
+use Kint\Value\InstanceValue;
 use stdClass;
 
+/**
+ * @coversNothing
+ */
 class BlacklistPluginTest extends KintTestCase
 {
     /**
@@ -40,7 +48,7 @@ class BlacklistPluginTest extends KintTestCase
      */
     public function testGetTypes()
     {
-        $b = new BlacklistPlugin();
+        $b = new BlacklistPlugin($this->createStub(Parser::class));
 
         $this->assertSame(['object'], $b->getTypes());
     }
@@ -50,20 +58,20 @@ class BlacklistPluginTest extends KintTestCase
      */
     public function testGetTriggers()
     {
-        $b = new BlacklistPlugin();
+        $b = new BlacklistPlugin($this->createStub(Parser::class));
 
         $this->assertSame(Parser::TRIGGER_BEGIN, $b->getTriggers());
     }
 
     /**
      * @covers \Kint\Parser\BlacklistPlugin::blacklistValue
-     * @covers \Kint\Parser\BlacklistPlugin::parse
+     * @covers \Kint\Parser\BlacklistPlugin::parseBegin
      */
     public function testBlacklistValue()
     {
         $p = new Parser();
-        $bp = new BlacklistPlugin();
-        $b = Value::blank('$v', '$v');
+        $bp = new BlacklistPlugin($p);
+        $b = new BaseContext('$v');
         $v = new ChildTestClass();
 
         $p->addPlugin($bp);
@@ -72,8 +80,10 @@ class BlacklistPluginTest extends KintTestCase
         $pp = new ProxyPlugin(
             ['object'],
             Parser::TRIGGER_COMPLETE,
-            function () use (&$completed) {
+            function (&$var, $v) use (&$completed) {
                 $completed = true;
+
+                return $v;
             }
         );
 
@@ -81,81 +91,78 @@ class BlacklistPluginTest extends KintTestCase
 
         $o = $p->parse($v, clone $b);
 
-        $this->assertNotContains('blacklist', $o->hints);
+        $this->assertEquals(false, $o->flags & AbstractValue::FLAG_BLACKLIST);
         $this->assertTrue($completed);
 
-        BlacklistPlugin::$shallow_blacklist[] = 'Kint\\Test\\Fixtures\\TestClass';
+        BlacklistPlugin::$shallow_blacklist[] = TestClass::class;
 
         $completed = false;
         $o = $p->parse($v, clone $b);
 
-        $this->assertNotContains('blacklist', $o->hints);
+        $this->assertEquals(false, $o->flags & AbstractValue::FLAG_BLACKLIST);
         $this->assertTrue($completed);
 
         $v = [$v];
 
         $completed = false;
         $bo = $p->parse($v, clone $b);
+        $bo = $bo->getContents();
+        $bo = \reset($bo);
 
-        $bo = \reset($bo->value->contents);
-
-        $this->assertContains('blacklist', $bo->hints);
+        $this->assertEquals(true, $bo->flags & AbstractValue::FLAG_BLACKLIST);
         $this->assertFalse($completed);
-        $this->assertInstanceOf('Kint\\Zval\\InstanceValue', $bo);
-        $this->assertSame($o->spl_object_hash, $bo->spl_object_hash);
-        $this->assertSame($o->classname, $bo->classname);
+        $this->assertInstanceOf(InstanceValue::class, $bo);
+        $this->assertSame($o->getSplObjectHash(), $bo->getSplObjectHash());
+        $this->assertSame($o->getClassName(), $bo->getClassName());
 
         $v = \reset($v);
-        BlacklistPlugin::$blacklist[] = 'Kint\\Test\\Fixtures\\TestClass';
+        BlacklistPlugin::$blacklist[] = TestClass::class;
 
         $completed = false;
         $bo = $p->parse($v, clone $b);
 
-        $this->assertContains('blacklist', $bo->hints);
+        $this->assertEquals(true, $bo->flags & AbstractValue::FLAG_BLACKLIST);
         $this->assertFalse($completed);
-        $this->assertSame($o->name, $bo->name);
-        $this->assertSame($o->access_path, $bo->access_path);
-        $this->assertSame($o->spl_object_hash, $bo->spl_object_hash);
-        $this->assertSame($o->classname, $bo->classname);
+        $this->assertEquals($o->getContext(), $bo->getContext());
+        $this->assertSame($o->getSplObjectHash(), $bo->getSplObjectHash());
+        $this->assertSame($o->getClassName(), $bo->getClassName());
 
         $v = new stdClass();
 
         $completed = false;
         $o = $p->parse($v, clone $b);
 
-        $this->assertNotContains('blacklist', $o->hints);
+        $this->assertEquals(false, $o->flags & AbstractValue::FLAG_BLACKLIST);
         $this->assertTrue($completed);
 
         $v = [$v];
 
         $completed = false;
         $o = $p->parse($v, clone $b);
+        $o = $o->getContents();
+        $o = \reset($o);
 
-        $o = \reset($o->value->contents);
-
-        $this->assertNotContains('blacklist', $o->hints);
+        $this->assertEquals(false, $o->flags & AbstractValue::FLAG_BLACKLIST);
         $this->assertTrue($completed);
     }
 
     /**
-     * @covers \Kint\Parser\BlacklistPlugin::parse
+     * @covers \Kint\Parser\BlacklistPlugin::parseBegin
      */
     public function testBadParse()
     {
         $p = new Parser();
-        $b = Value::blank('$v', '$v');
+        $b = new BaseContext('$v');
         $v = 1234;
 
         $o = $p->parse($v, clone $b);
-        $ostash = clone $o;
 
-        $bp = new BlacklistPlugin();
+        $bp = new BlacklistPlugin($p);
 
         $p->addPlugin($bp);
 
-        $bp->parse($v, $o, Parser::TRIGGER_BEGIN);
+        $o = $bp->parseBegin($v, $b, Parser::TRIGGER_BEGIN);
 
-        $this->assertSame(1234, $v);
-        $this->assertEquals($ostash, $o);
+        $this->assertNull($o);
     }
 }

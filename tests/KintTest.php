@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /*
  * The MIT License (MIT)
  *
@@ -25,17 +27,29 @@
 
 namespace Kint\Test;
 
+use InvalidArgumentException;
 use Kint\Kint;
+use Kint\Parser\AbstractPlugin;
+use Kint\Parser\ConstructablePluginInterface;
+use Kint\Parser\MicrotimePlugin;
 use Kint\Parser\Parser;
 use Kint\Parser\TimestampPlugin;
+use Kint\Renderer\CliRenderer;
+use Kint\Renderer\PlainRenderer;
+use Kint\Renderer\RichRenderer;
 use Kint\Renderer\TextRenderer;
 use Kint\Test\Fixtures\Php56TestClass;
 use Kint\Test\Fixtures\TestClass;
-use Kint\Zval\Value;
-use Prophecy\Argument;
+use Kint\Value\Context\BaseContext;
+use Kint\Value\FixedWidthValue;
+use Kint\Value\UninitializedValue;
+use PHPUnit\Framework\Error\Warning;
 use ReflectionClass;
 use ReflectionProperty;
 
+/**
+ * @coversNothing
+ */
 class KintTest extends KintTestCase
 {
     /**
@@ -93,10 +107,14 @@ class KintTest extends KintTestCase
      */
     public function testSetStatesFromStatics()
     {
-        $p1 = new TimestampPlugin();
-        $p2 = new TimestampPlugin();
-        $p3 = new TimestampPlugin();
-        $p4 = new TimestampPlugin();
+        $parser = $this->createMock(Parser::class);
+        $renderer = $this->createMock(TextRenderer::class);
+        $k = new Kint($parser, $renderer);
+
+        $p1 = new TimestampPlugin($parser);
+        $p2 = new TimestampPlugin($parser);
+        $p3 = new TimestampPlugin($parser);
+        $p4 = new TimestampPlugin($parser);
 
         $statics = [
             'expanded' => true,
@@ -106,35 +124,32 @@ class KintTest extends KintTestCase
             'plugins' => [$p1, $p2, $p3, $p4],
         ];
 
-        $parser = $this->prophesize('Kint\\Parser\\Parser');
-        $renderer = $this->prophesize('Kint\\Renderer\\TextRenderer');
-        $k = new Kint($parser->reveal(), $renderer->reveal());
+        $parser->expects($this->once())->method('setDepthLimit')->with(42);
+        $parser->expects($this->once())->method('clearPlugins');
 
-        $renderer->setStatics($statics)->shouldBeCalledTimes(1);
+        $expected_plugins = [$p1, $p3, $p4];
 
-        $parser->setDepthLimit(42)->shouldBeCalledTimes(1);
-        $parser->clearPlugins()->shouldBeCalledTimes(1);
+        $renderer->expects($this->once())->method('setStatics')->with($this->identicalTo($statics));
+        $renderer->expects($this->once())
+            ->method('filterParserPlugins')
+            ->with($this->identicalTo($statics['plugins']))
+            ->willReturn($expected_plugins);
 
-        $renderer->filterParserPlugins([$p1, $p2, $p3, $p4])->shouldBeCalledTimes(1)->willReturn([$p1, $p3, $p4]);
+        $parser->expects($this->exactly(3))
+            ->method('addPlugin')
+            ->willReturnCallback(function ($plugin) use (&$expected_plugins) {
+                $index = \array_search($plugin, $expected_plugins, true);
+                if (false === $index) {
+                    $this->fail('Unexpected plugin added to parser');
+                }
+                unset($expected_plugins[$index]);
 
-        // Argument::that is a workaround for a bug in prophet's Argument::is
-        $parser->addPlugin(
-            Argument::that(function ($arg) use ($p1) {
-                return $arg === $p1;
-            })
-        )->shouldBeCalledTimes(1);
-        $parser->addPlugin(
-            Argument::that(function ($arg) use ($p3) {
-                return $arg === $p3;
-            })
-        )->shouldBeCalledTimes(1);
-        $parser->addPlugin(
-            Argument::that(function ($arg) use ($p4) {
-                return $arg === $p4;
-            })
-        )->shouldBeCalledTimes(1);
+                return true;
+            });
 
         $k->setStatesFromStatics($statics);
+
+        $this->assertCount(0, $expected_plugins);
     }
 
     /**
@@ -142,39 +157,44 @@ class KintTest extends KintTestCase
      */
     public function testSetStatesFromStaticsStringPlugins()
     {
-        $r = new ReflectionProperty('Kint\\Kint', 'plugin_pool');
-        $r->setAccessible(true);
-        $r->setValue([]);
-
-        $parser = $this->prophesize('Kint\\Parser\\Parser');
-        $renderer = $this->prophesize('Kint\\Renderer\\TextRenderer');
-        $k = new Kint($parser->reveal(), $renderer->reveal());
+        $parser = $this->createMock(Parser::class);
+        $renderer = $this->createMock(TextRenderer::class);
+        $k = new Kint($parser, $renderer);
 
         $statics = [
             'plugins' => [
-                'Kint\\Parser\\TimestampPlugin',
-                'Kint\\Parser\\MicrotimePlugin',
+                TimestampPlugin::class,
+                MicrotimePlugin::class,
             ],
         ];
 
-        $renderer->setStatics($statics)->shouldBeCalledTimes(1);
+        $parser->expects($this->once())->method('setDepthLimit')->with(0);
+        $parser->expects($this->once())->method('clearPlugins');
 
-        $parser->setDepthLimit(0)->shouldBeCalledTimes(1);
-        $parser->clearPlugins()->shouldBeCalledTimes(1);
+        $renderer->expects($this->once())->method('setStatics')->with($statics);
+        $renderer->expects($this->once())
+            ->method('filterParserPlugins')
+            ->willReturnCallback(function ($plugins) {
+                $out = [];
 
-        $renderer->filterParserPlugins(Argument::any())->shouldBeCalledTimes(1)->will(function ($args) {
-            $out = [];
-
-            foreach ($args[0] as $plugin) {
-                if ($plugin instanceof TimestampPlugin) {
-                    $out[] = $plugin;
+                foreach ($plugins as $plugin) {
+                    if ($plugin instanceof TimestampPlugin) {
+                        $out[] = $plugin;
+                    } elseif (!$plugin instanceof ConstructablePluginInterface) {
+                        $this->fail('Invalid plugin passed to filterParserPlugins');
+                    }
                 }
+
+                return $out;
+            });
+
+        $parser->expects($this->once())->method('addPlugin')->willReturnCallback(function ($plugin) use (&$expected_plugins) {
+            if (!$plugin instanceof TimestampPlugin) {
+                $this->fail('Unexpected plugin added to parser');
             }
 
-            return $out;
+            return true;
         });
-
-        $parser->addPlugin(Argument::type('Kint\\Parser\\TimestampPlugin'))->shouldBeCalledTimes(1);
 
         $k->setStatesFromStatics($statics);
     }
@@ -184,16 +204,63 @@ class KintTest extends KintTestCase
      */
     public function testSetStatesFromStaticsEmpty()
     {
-        $parser = $this->prophesize('Kint\\Parser\\Parser');
-        $renderer = $this->prophesize('Kint\\Renderer\\TextRenderer');
-        $k = new Kint($parser->reveal(), $renderer->reveal());
+        $parser = $this->createMock(Parser::class);
+        $renderer = $this->createMock(TextRenderer::class);
+        $k = new Kint($parser, $renderer);
 
-        $renderer->setStatics([])->shouldBeCalledTimes(1);
+        $renderer->expects($this->once())->method('setStatics')->with([]);
 
-        $parser->setDepthLimit(0)->shouldBeCalledTimes(1);
-        $parser->clearPlugins()->shouldBeCalledTimes(1);
+        $parser->expects($this->once())->method('setDepthLimit')->with(0);
+        $parser->expects($this->once())->method('clearPlugins');
 
         $k->setStatesFromStatics([]);
+    }
+
+    /**
+     * @covers \Kint\Kint::setStatesFromStatics
+     */
+    public function testSetStatesFromStaticsBadPlugin()
+    {
+        $parser = new Parser();
+        $renderer = $this->createMock(TextRenderer::class);
+        $renderer->expects($this->once())
+            ->method('filterParserPlugins')
+            ->willReturnCallback(fn ($in) => $in);
+        $k = new Kint($parser, $renderer);
+
+        $statics = [
+            'plugins' => [
+                new class($parser) extends AbstractPlugin {
+                    public function getTypes(): array
+                    {
+                        return ['int'];
+                    }
+
+                    public function getTriggers(): int
+                    {
+                        return Parser::TRIGGER_COMPLETE;
+                    }
+                },
+            ],
+        ];
+
+        $k->setStatesFromStatics([]);
+
+        try {
+            $k->setStatesFromStatics($statics);
+        } catch (Warning $w) {
+            if (KINT_PHP82) {
+                $this->assertStringStartsWith('Plugin '.AbstractPlugin::class."@anonymous\0/", $w->getMessage());
+            } elseif (KINT_PHP80) {
+                $this->assertStringStartsWith('Plugin '.AbstractPlugin::class.'@anonymous ', $w->getMessage());
+            } else {
+                $this->assertStringStartsWith('Plugin class@anonymous ', $w->getMessage());
+            }
+
+            return;
+        }
+
+        $this->fail("Didn't get warning");
     }
 
     /**
@@ -201,74 +268,65 @@ class KintTest extends KintTestCase
      */
     public function testSetStatesFromCallInfo()
     {
-        $r = new TextRenderer();
-        $p = new Parser();
-        $k = new Kint($p, $r);
-
-        // Set up defaults
-        $k->setStatesFromStatics([
-            'depth_limit' => 42,
-        ]);
-
-        $k->setStatesFromCallInfo(['foo' => 'bar']);
-
-        $this->assertSame(['depth_limit' => 42], $r->getStatics());
-        $this->assertSame(
-            [
-                'params' => null,
-                'modifiers' => [],
-                'callee' => null,
-                'caller' => null,
-                'trace' => [],
-            ],
-            $r->getCallInfo()
-        );
-        $this->assertSame(42, $p->getDepthLimit());
-        $this->assertNull($p->getCallerClass());
-
-        $k->setStatesFromCallInfo([
+        $ci1 = ['foo' => 'bar'];
+        $ci2 = [
             'modifiers' => ['!', '@', '+'],
             'caller' => [
                 'class' => 'test1234',
             ],
-        ]);
+        ];
 
-        $this->assertSame(
-            [
-                'params' => null,
-                'modifiers' => ['!', '@', '+'],
-                'callee' => null,
-                'caller' => [
-                    'class' => 'test1234',
-                ],
-                'trace' => [],
-            ],
-            $r->getCallInfo()
-        );
+        $r = $this->createMock(TextRenderer::class);
+        $r->expects($count = $this->exactly(2))
+            ->method('setCallInfo')
+            ->willReturnCallback(function ($param) use ($count, $ci1, $ci2) {
+                switch ($count->getInvocationCount()) {
+                    case 1:
+                        $this->assertSame($ci1, $param);
+
+                        return;
+                    case 2:
+                        $this->assertSame($ci2, $param);
+
+                        return;
+                }
+            });
+
+        $p = new Parser(42);
+        $k = new Kint($p, $r);
+
+        $k->setStatesFromCallInfo($ci1);
+
+        $this->assertSame(42, $p->getDepthLimit());
+        $this->assertNull($p->getCallerClass());
+
+        $k->setStatesFromCallInfo($ci2);
+
         $this->assertSame(0, $p->getDepthLimit());
         $this->assertSame('test1234', $p->getCallerClass());
     }
 
     /**
      * @covers \Kint\Kint::dumpAll
+     * @covers \Kint\Kint::dumpVar
      */
     public function testDumpAll()
     {
-        $parser = $this->prophesize('Kint\\Parser\\Parser');
-        $renderer = $this->prophesize('Kint\\Renderer\\TextRenderer');
-        $k = new Kint($parser->reveal(), $renderer->reveal());
+        $parser = $this->createMock(Parser::class);
+        $renderer = $this->createMock(TextRenderer::class);
+        $k = new Kint($parser, $renderer);
 
-        $dumpee = $k;
-        $base = Value::blank();
+        $v = 123;
+        $base = new BaseContext('$v');
+        $val = new FixedWidthValue($base, $v);
 
-        $renderer->preRender()->shouldBeCalledTimes(1)->willReturn('pre.');
+        $parser->expects($this->exactly(2))->method('parse')->with($v, $this->identicalTo($base))->willReturn($val);
 
-        $parser->parse(Argument::is($dumpee), Argument::is($base))->shouldBeCalledTimes(2)->willReturn($base);
-        $renderer->render(Argument::is($base))->shouldBeCalledTimes(2)->willReturn('render.');
+        $renderer->expects($this->once())->method('preRender')->willReturn('pre.');
+        $renderer->expects($this->exactly(2))->method('render')->with($this->identicalTo($val))->willReturn('render.');
+        $renderer->expects($this->once())->method('postRender')->willReturn('post');
 
-        $renderer->postRender()->shouldBeCalledTimes(1)->willReturn('post');
-
-        $this->assertSame('pre.render.render.post', $k->dumpAll([$dumpee, $dumpee], [$base, $base]));
+        $this->assertSame('pre.render.render.post', $k->dumpAll([$v, $v], [$base, $base]));
     }
 
     /**
@@ -276,15 +334,15 @@ class KintTest extends KintTestCase
      */
     public function testDumpNothing()
     {
-        $parser = $this->prophesize('Kint\\Parser\\Parser');
-        $renderer = $this->prophesize('Kint\\Renderer\\TextRenderer');
-        $k = new Kint($parser->reveal(), $renderer->reveal());
+        $parser = $this->createMock(Parser::class);
+        $renderer = $this->createMock(TextRenderer::class);
+        $k = new Kint($parser, $renderer);
 
-        $renderer->preRender()->shouldBeCalledTimes(1)->willReturn('pre.');
-        $renderer->renderNothing()->shouldBeCalledTimes(1)->willReturn('nothing.');
-        $renderer->postRender()->shouldBeCalledTimes(1)->willReturn('post');
+        $renderer->expects($this->once())->method('preRender')->willReturn('pre.');
+        $renderer->expects($this->once())->method('render')->with($this->equalTo(new UninitializedValue(new BaseContext('No argument'))))->willReturn('nothing.');
+        $renderer->expects($this->once())->method('postRender')->willReturn('post');
 
-        $parser->parse()->shouldNotBeCalled();
+        $parser->expects($this->never())->method('parse');
 
         $this->assertSame('pre.nothing.post', $k->dumpAll([], []));
     }
@@ -294,13 +352,13 @@ class KintTest extends KintTestCase
      */
     public function testDumpAllUnmatchingArgs()
     {
-        $this->expectException('InvalidArgumentException');
+        $this->expectException(InvalidArgumentException::class);
 
         $p = new Parser();
         $r = new TextRenderer();
         $k = new Kint($p, $r);
 
-        $k->dumpAll([$k], [Value::blank(), 'bar' => 'baz']);
+        $k->dumpAll([$k], [new BaseContext('$k'), 'bar' => 'baz']);
     }
 
     /**
@@ -308,31 +366,13 @@ class KintTest extends KintTestCase
      */
     public function testDumpAllIncorrectBase()
     {
-        $this->expectException('InvalidArgumentException');
+        $this->expectException(InvalidArgumentException::class);
 
         $p = new Parser();
         $r = new TextRenderer();
         $k = new Kint($p, $r);
 
         $k->dumpAll([$k], ['foo']);
-    }
-
-    /**
-     * @covers \Kint\Kint::dumpVar
-     */
-    public function testDumpVar()
-    {
-        $parser = $this->prophesize('Kint\\Parser\\Parser');
-        $renderer = $this->prophesize('Kint\\Renderer\\TextRenderer');
-        $k = new Kint($parser->reveal(), $renderer->reveal());
-
-        $dumpee = $k;
-        $base = Value::blank();
-
-        $parser->parse(Argument::is($dumpee), Argument::is($base))->shouldBeCalledTimes(1)->willReturn($base);
-        $renderer->render(Argument::is($base))->shouldBeCalledTimes(1)->willReturn('render');
-
-        $this->assertSame('render', $k->dumpVar($dumpee, $base));
     }
 
     /**
@@ -369,12 +409,12 @@ class KintTest extends KintTestCase
                     'cli_detection' => false,
                     'mode_default_cli' => 43,
                     'renderers' => [
-                        42 => 'Kint\\Renderer\\RichRenderer',
-                        43 => 'Kint\\Renderer\\CliRenderer',
-                        44 => 'Kint\\Renderer\\PlainRenderer',
+                        42 => RichRenderer::class,
+                        43 => CliRenderer::class,
+                        44 => PlainRenderer::class,
                     ],
                 ],
-                'Kint\\Renderer\\RichRenderer',
+                RichRenderer::class,
             ],
             'auto with cli' => [
                 [
@@ -383,12 +423,12 @@ class KintTest extends KintTestCase
                     'cli_detection' => true,
                     'mode_default_cli' => 43,
                     'renderers' => [
-                        42 => 'Kint\\Renderer\\RichRenderer',
-                        43 => 'Kint\\Renderer\\CliRenderer',
-                        44 => 'Kint\\Renderer\\PlainRenderer',
+                        42 => RichRenderer::class,
+                        43 => CliRenderer::class,
+                        44 => PlainRenderer::class,
                     ],
                 ],
-                'Kint\\Renderer\\CliRenderer',
+                CliRenderer::class,
             ],
             'specific' => [
                 [
@@ -397,12 +437,12 @@ class KintTest extends KintTestCase
                     'cli_detection' => true,
                     'mode_default_cli' => 43,
                     'renderers' => [
-                        42 => 'Kint\\Renderer\\RichRenderer',
-                        43 => 'Kint\\Renderer\\CliRenderer',
-                        44 => 'Kint\\Renderer\\PlainRenderer',
+                        42 => RichRenderer::class,
+                        43 => CliRenderer::class,
+                        44 => PlainRenderer::class,
                     ],
                 ],
-                'Kint\\Renderer\\PlainRenderer',
+                PlainRenderer::class,
             ],
             'disabled' => [
                 ['enabled_mode' => false],
@@ -415,12 +455,12 @@ class KintTest extends KintTestCase
                     'cli_detection' => true,
                     'mode_default_cli' => 43,
                     'renderers' => [
-                        42 => 'Kint\\Renderer\\RichRenderer',
-                        43 => 'Kint\\Renderer\\CliRenderer',
-                        44 => 'Kint\\Renderer\\PlainRenderer',
+                        42 => RichRenderer::class,
+                        43 => CliRenderer::class,
+                        44 => PlainRenderer::class,
                     ],
                 ],
-                'Kint\\Renderer\\TextRenderer',
+                TextRenderer::class,
             ],
             'falsey renderer' => [
                 [
@@ -429,18 +469,33 @@ class KintTest extends KintTestCase
                     'cli_detection' => false,
                     'mode_default_cli' => 1,
                     'renderers' => [
-                        0 => 'Kint\\Renderer\\RichRenderer',
-                        1 => 'Kint\\Renderer\\CliRenderer',
-                        2 => 'Kint\\Renderer\\PlainRenderer',
+                        0 => RichRenderer::class,
+                        1 => CliRenderer::class,
+                        2 => PlainRenderer::class,
                     ],
                 ],
-                'Kint\\Renderer\\RichRenderer',
+                RichRenderer::class,
+            ],
+            'instanced rendererer' => [
+                [
+                    'enabled_mode' => true,
+                    'mode_default' => 42,
+                    'cli_detection' => false,
+                    'mode_default_cli' => 43,
+                    'renderers' => [
+                        42 => new RichRenderer(),
+                        43 => CliRenderer::class,
+                        44 => PlainRenderer::class,
+                    ],
+                ],
+                RichRenderer::class,
             ],
         ];
     }
 
     /**
      * @covers \Kint\Kint::createFromStatics
+     *
      * @dataProvider staticModeProvider
      *
      * @param false|string $renderer_class
@@ -458,70 +513,90 @@ class KintTest extends KintTestCase
 
     public function baseProvider()
     {
-        return [
+        $baseinfo = [
             'normal params' => [
                 [
                     [
                         'name' => '$a',
                         'path' => '$a',
                         'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                     [
                         'name' => '$b[...]',
                         'path' => '$b[$a]',
                         'expression' => false,
-                    ],
-                ],
-                2,
-                [
-                    Value::blank('$a', '$a'),
-                    Value::blank('$b[...]', '$b[$a]'),
-                ],
-            ],
-            'blacklisted params' => [
-                [
-                    [
-                        'name' => 'true',
-                        'path' => 'true',
-                        'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                     [
                         'name' => '[...]',
-                        'path' => '[$a, $b, $c]',
+                        'path' => '[$a, $b]',
                         'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                 ],
-                2,
+                3,
                 [
-                    Value::blank(null, 'true'),
-                    Value::blank(null, '[$a, $b, $c]'),
+                    ['$a', '$a'],
+                    ['$b[...]', '$b[$a]'],
+                    ['[...]', '[$a, $b]'],
                 ],
             ],
-            'expression params' => [
+            'expressions params' => [
                 [
                     [
                         'name' => '$a + $b',
                         'path' => '$a + $b',
                         'expression' => true,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                     [
                         'name' => '[...] + $c[...]',
                         'path' => '[$a, $b] + $c[$d]',
                         'expression' => true,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                 ],
                 2,
                 [
-                    Value::blank('$a + $b', '($a + $b)'),
-                    Value::blank('[...] + $c[...]', '([$a, $b] + $c[$d])'),
+                    ['$a + $b', '($a + $b)'],
+                    ['[...] + $c[...]', '([$a, $b] + $c[$d])'],
+                ],
+            ],
+            'new without parens params' => [
+                [
+                    [
+                        'name' => 'new X',
+                        'path' => 'new X',
+                        'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => true,
+                    ],
+                    [
+                        'name' => 'new (...)',
+                        'path' => 'new ("X")',
+                        'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => true,
+                    ],
+                ],
+                2,
+                [
+                    ['new X', 'new X()'],
+                    ['new (...)', 'new ("X")()'],
                 ],
             ],
             'missing params' => [
                 [],
                 2,
                 [
-                    Value::blank(null, '$0'),
-                    Value::blank(null, '$1'),
+                    ['$0', '$0'],
+                    ['$1', '$1'],
                 ],
             ],
             'no params' => [
@@ -529,11 +604,77 @@ class KintTest extends KintTestCase
                 0,
                 [],
             ],
+            'renamed literals' => [
+                [
+                    [
+                        'name' => 'null',
+                        'path' => 'null',
+                        'expression' => false,
+                        'literal' => true,
+                        'new_without_parens' => false,
+                    ],
+                    [
+                        'name' => 'true',
+                        'path' => 'true',
+                        'expression' => false,
+                        'literal' => true,
+                        'new_without_parens' => false,
+                    ],
+                    [
+                        'name' => 'false',
+                        'path' => 'false',
+                        'expression' => false,
+                        'literal' => true,
+                        'new_without_parens' => false,
+                    ],
+                    [
+                        'name' => '"..."',
+                        'path' => '"Hello world"',
+                        'expression' => false,
+                        'literal' => true,
+                        'new_without_parens' => false,
+                    ],
+                    [
+                        'name' => '1234.5678',
+                        'path' => '1234.5678',
+                        'expression' => false,
+                        'literal' => true,
+                        'new_without_parens' => false,
+                    ],
+                    [
+                        'name' => '[]',
+                        'path' => '[]',
+                        'expression' => false,
+                        'literal' => true,
+                        'new_without_parens' => false,
+                    ],
+                ],
+                6,
+                [
+                    ['literal', 'null'],
+                    ['literal', 'true'],
+                    ['literal', 'false'],
+                    ['literal', '"Hello world"'],
+                    ['literal', '1234.5678'],
+                    ['literal', '[]'],
+                ],
+            ],
         ];
+
+        foreach ($baseinfo as &$run) {
+            foreach ($run[2] as &$expected) {
+                $base = new BaseContext($expected[0]);
+                $base->access_path = $expected[1];
+                $expected = $base;
+            }
+        }
+
+        return $baseinfo;
     }
 
     /**
      * @covers \Kint\Kint::getBasesFromParamInfo
+     *
      * @dataProvider baseProvider
      *
      * @param int $count
@@ -569,7 +710,7 @@ class KintTest extends KintTestCase
         $data['empty trace'] = [
             'aliases' => $aliases,
             'trace' => [],
-            'param_count' => 1234,
+            'args' => \range(0, 1234),
             'expect' => [
                 'params' => null,
                 'modifiers' => [],
@@ -581,22 +722,16 @@ class KintTest extends KintTestCase
 
         $data['full trace'] = [
             'aliases' => $aliases,
-            'trace' => \array_merge(
-                $basetrace,
-                [
-                    $dumpframe + [
-                        'file' => TestClass::DUMP_FILE,
-                        'line' => TestClass::DUMP_LINE,
-                    ],
+            'trace' => [
+                ...$basetrace,
+                $dumpframe + [
+                    'file' => TestClass::DUMP_FILE,
+                    'line' => TestClass::DUMP_LINE,
                 ],
-                [
-                    [
-                        'function' => 'usort',
-                    ],
-                ],
-                $basetrace
-            ),
-            'param_count' => 1234,
+                ['function' => 'usort'],
+                ...$basetrace,
+            ],
+            'args' => \range(0, 1234),
             'expect' => [
                 'params' => null,
                 'modifiers' => [],
@@ -607,15 +742,13 @@ class KintTest extends KintTestCase
                 'caller' => [
                     'function' => 'usort',
                 ],
-                'trace' => \array_merge(
-                    [
-                        $dumpframe + [
-                            'file' => TestClass::DUMP_FILE,
-                            'line' => TestClass::DUMP_LINE,
-                        ],
+                'trace' => [
+                    $dumpframe + [
+                        'file' => TestClass::DUMP_FILE,
+                        'line' => TestClass::DUMP_LINE,
                     ],
-                    $basetrace
-                ),
+                    ...$basetrace,
+                ],
             ],
         ];
 
@@ -623,49 +756,40 @@ class KintTest extends KintTestCase
         $data['internal callee trace']['aliases'][] = 'usort';
         $data['internal callee trace']['expect']['callee'] = ['function' => 'usort'];
         $data['internal callee trace']['expect']['caller'] = $basetrace[0];
-        $data['internal callee trace']['expect']['trace'] = \array_merge(
-            [
-                ['function' => 'usort'],
-            ],
-            $basetrace
-        );
+        $data['internal callee trace']['expect']['trace'] = [['function' => 'usort'], ...$basetrace];
         $data['internal callee trace']['trace'] = $data['internal callee trace']['expect']['trace'];
 
         $data['unmatching trace'] = $data['full trace'];
         $data['unmatching trace']['aliases'] = [];
         $data['unmatching trace']['expect']['callee'] = null;
         $data['unmatching trace']['expect']['caller'] = null;
-        $data['unmatching trace']['expect']['trace'] = \array_merge(
-            $basetrace,
-            [
-                $dumpframe + [
-                    'file' => TestClass::DUMP_FILE,
-                    'line' => TestClass::DUMP_LINE,
-                ],
+        $data['unmatching trace']['expect']['trace'] = [
+            ...$basetrace,
+            $dumpframe + [
+                'file' => TestClass::DUMP_FILE,
+                'line' => TestClass::DUMP_LINE,
             ],
-            $basetrace
-        );
+            ...$basetrace,
+        ];
 
         $data['trace with params'] = $data['full trace'];
-        $data['trace with params']['param_count'] = 3;
+        $data['trace with params']['args'] = [1, 2, 3];
         $data['trace with params']['expect']['params'] = [
-            ['name' => '$x', 'path' => '$x', 'expression' => false],
-            ['name' => '$y', 'path' => '$y', 'expression' => false],
-            ['name' => '$z', 'path' => '$z', 'expression' => false],
+            ['name' => '$x', 'path' => '$x', 'expression' => false, 'literal' => false, 'new_without_parens' => false],
+            ['name' => '$y', 'path' => '$y', 'expression' => false, 'literal' => false, 'new_without_parens' => false],
+            ['name' => '$z', 'path' => '$z', 'expression' => false, 'literal' => false, 'new_without_parens' => false],
         ];
 
         $data['trace with modifiers'] = [
             'aliases' => $aliases,
-            'trace' => \array_merge(
-                    [
-                        $dumpframe + [
-                            'file' => TestClass::DUMP_FILE,
-                            'line' => TestClass::DUMP_LINE + 1,
-                        ],
-                    ],
-                    $basetrace
-                ),
-            'param_count' => 0,
+            'trace' => [
+                $dumpframe + [
+                    'file' => TestClass::DUMP_FILE,
+                    'line' => TestClass::DUMP_LINE + 1,
+                ],
+                ...$basetrace,
+            ],
+            'args' => [],
             'expect' => [
                 'params' => [],
                 'modifiers' => ['!', '+'],
@@ -674,37 +798,35 @@ class KintTest extends KintTestCase
                     'line' => TestClass::DUMP_LINE + 1,
                 ],
                 'caller' => $basetrace[0],
-                'trace' => \array_merge(
-                    [
-                        $dumpframe + [
-                            'file' => TestClass::DUMP_FILE,
-                            'line' => TestClass::DUMP_LINE + 1,
-                        ],
+                'trace' => [
+                    $dumpframe + [
+                        'file' => TestClass::DUMP_FILE,
+                        'line' => TestClass::DUMP_LINE + 1,
                     ],
-                    $basetrace
-                ),
+                    ...$basetrace,
+                ],
             ],
         ];
 
         $data['trace function with modifier'] = [
             'aliases' => $aliases,
-            'trace' => \array_merge(
-                    [
-                        [
-                            'function' => 'd',
-                            'file' => TestClass::DUMP_FILE,
-                            'line' => TestClass::DUMP_LINE + 2,
-                        ],
-                    ],
-                    $basetrace
-                ),
-            'param_count' => 1,
+            'trace' => [
+                [
+                    'function' => 'd',
+                    'file' => TestClass::DUMP_FILE,
+                    'line' => TestClass::DUMP_LINE + 2,
+                ],
+                ...$basetrace,
+            ],
+            'args' => [1],
             'expect' => [
                 'params' => [
                     [
                         'name' => '$x',
                         'path' => '$x',
                         'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                 ],
                 'modifiers' => ['~'],
@@ -714,32 +836,59 @@ class KintTest extends KintTestCase
                     'line' => TestClass::DUMP_LINE + 2,
                 ],
                 'caller' => $basetrace[0],
-                'trace' => \array_merge(
+                'trace' => [
                     [
-                        [
-                            'function' => 'd',
-                            'file' => TestClass::DUMP_FILE,
-                            'line' => TestClass::DUMP_LINE + 2,
-                        ],
+                        'function' => 'd',
+                        'file' => TestClass::DUMP_FILE,
+                        'line' => TestClass::DUMP_LINE + 2,
                     ],
-                    $basetrace
-                ),
+                    ...$basetrace,
+                ],
+            ],
+        ];
+
+        $data['missing args somehow'] = [
+            'aliases' => $aliases,
+            'trace' => [
+                [
+                    'function' => 'd',
+                    'file' => TestClass::DUMP_FILE,
+                    'line' => TestClass::DUMP_LINE + 2,
+                ],
+                ...$basetrace,
+            ],
+            'args' => [],
+            'expect' => [
+                'params' => null,
+                'modifiers' => [],
+                'callee' => [
+                    'function' => 'd',
+                    'file' => TestClass::DUMP_FILE,
+                    'line' => TestClass::DUMP_LINE + 2,
+                ],
+                'caller' => $basetrace[0],
+                'trace' => [
+                    [
+                        'function' => 'd',
+                        'file' => TestClass::DUMP_FILE,
+                        'line' => TestClass::DUMP_LINE + 2,
+                    ],
+                    ...$basetrace,
+                ],
             ],
         ];
 
         $data['trace function with multiple hits'] = [
             'aliases' => $aliases,
-            'trace' => \array_merge(
-                    [
-                        [
-                            'function' => 'd',
-                            'file' => TestClass::DUMP_FILE,
-                            'line' => TestClass::DUMP_LINE + 3,
-                        ],
-                    ],
-                    $basetrace
-                ),
-            'param_count' => 1,
+            'trace' => [
+                [
+                    'function' => 'd',
+                    'file' => TestClass::DUMP_FILE,
+                    'line' => TestClass::DUMP_LINE + 3,
+                ],
+                ...$basetrace,
+            ],
+            'args' => [1],
             'expect' => [
                 'params' => null,
                 'modifiers' => [],
@@ -749,52 +898,56 @@ class KintTest extends KintTestCase
                     'line' => TestClass::DUMP_LINE + 3,
                 ],
                 'caller' => $basetrace[0],
-                'trace' => \array_merge(
+                'trace' => [
                     [
-                        [
-                            'function' => 'd',
-                            'file' => TestClass::DUMP_FILE,
-                            'line' => TestClass::DUMP_LINE + 3,
-                        ],
+                        'function' => 'd',
+                        'file' => TestClass::DUMP_FILE,
+                        'line' => TestClass::DUMP_LINE + 3,
                     ],
-                    $basetrace
-                ),
+                    ...$basetrace,
+                ],
             ],
         ];
 
         $data['trace with unpack'] = [
             'aliases' => $aliases,
-            'trace' => \array_merge(
-                    [
-                        $dumpframe + [
-                            'file' => Php56TestClass::DUMP_FILE,
-                            'line' => Php56TestClass::DUMP_LINE,
-                        ],
-                    ],
-                    $basetrace
-                ),
-            'param_count' => 4,
+            'trace' => [
+                $dumpframe + [
+                    'file' => Php56TestClass::DUMP_FILE,
+                    'line' => Php56TestClass::DUMP_LINE,
+                ],
+                ...$basetrace,
+            ],
+            'args' => [1, 2, 3, 4],
             'expect' => [
                 'params' => [
                     [
                         'name' => '$x',
                         'path' => '$x',
                         'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                     [
                         'name' => '$y',
                         'path' => '$y',
                         'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                     [
-                        'name' => 'reset($z)',
-                        'path' => 'reset($z)',
+                        'name' => 'array_values($z)[0]',
+                        'path' => 'array_values($z)[0]',
                         'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                     [
                         'name' => 'array_values($z)[1]',
                         'path' => 'array_values($z)[1]',
                         'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                 ],
                 'modifiers' => [],
@@ -803,30 +956,69 @@ class KintTest extends KintTestCase
                     'line' => Php56TestClass::DUMP_LINE,
                 ],
                 'caller' => $basetrace[0],
-                'trace' => \array_merge(
-                    [
-                        $dumpframe + [
-                            'file' => Php56TestClass::DUMP_FILE,
-                            'line' => Php56TestClass::DUMP_LINE,
-                        ],
+                'trace' => [
+                    $dumpframe + [
+                        'file' => Php56TestClass::DUMP_FILE,
+                        'line' => Php56TestClass::DUMP_LINE,
                     ],
-                    $basetrace
-                ),
+                    ...$basetrace,
+                ],
+            ],
+        ];
+
+        $data['trace with empty unpack'] = [
+            'aliases' => $aliases,
+            'trace' => [
+                $dumpframe + [
+                    'file' => Php56TestClass::DUMP_FILE,
+                    'line' => Php56TestClass::DUMP_LINE,
+                ],
+                ...$basetrace,
+            ],
+            'args' => [1, 2],
+            'expect' => [
+                'params' => [
+                    [
+                        'name' => '$x',
+                        'path' => '$x',
+                        'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
+                    ],
+                    [
+                        'name' => '$y',
+                        'path' => '$y',
+                        'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
+                    ],
+                ],
+                'modifiers' => [],
+                'callee' => $dumpframe + [
+                    'file' => Php56TestClass::DUMP_FILE,
+                    'line' => Php56TestClass::DUMP_LINE,
+                ],
+                'caller' => $basetrace[0],
+                'trace' => [
+                    $dumpframe + [
+                        'file' => Php56TestClass::DUMP_FILE,
+                        'line' => Php56TestClass::DUMP_LINE,
+                    ],
+                    ...$basetrace,
+                ],
             ],
         ];
 
         $data['trace with double unpack'] = [
             'aliases' => $aliases,
-            'trace' => \array_merge(
-                    [
-                        $dumpframe + [
-                            'file' => Php56TestClass::DUMP_FILE,
-                            'line' => Php56TestClass::DUMP_LINE + 1,
-                        ],
-                    ],
-                    $basetrace
-                ),
-            'param_count' => 10,
+            'trace' => [
+                $dumpframe + [
+                    'file' => Php56TestClass::DUMP_FILE,
+                    'line' => Php56TestClass::DUMP_LINE + 1,
+                ],
+                ...$basetrace,
+            ],
+            'args' => \range(0, 9),
             'expect' => [
                 'params' => [],
                 'modifiers' => [],
@@ -835,36 +1027,34 @@ class KintTest extends KintTestCase
                     'line' => Php56TestClass::DUMP_LINE + 1,
                 ],
                 'caller' => $basetrace[0],
-                'trace' => \array_merge(
-                    [
-                        $dumpframe + [
-                            'file' => Php56TestClass::DUMP_FILE,
-                            'line' => Php56TestClass::DUMP_LINE + 1,
-                        ],
+                'trace' => [
+                    $dumpframe + [
+                        'file' => Php56TestClass::DUMP_FILE,
+                        'line' => Php56TestClass::DUMP_LINE + 1,
                     ],
-                    $basetrace
-                ),
+                    ...$basetrace,
+                ],
             ],
         ];
 
         $data['multiple trace with unpack one match'] = [
             'aliases' => $aliases,
-            'trace' => \array_merge(
-                    [
-                        $dumpframe + [
-                            'file' => Php56TestClass::DUMP_FILE,
-                            'line' => Php56TestClass::DUMP_LINE + 2,
-                        ],
-                    ],
-                    $basetrace
-                ),
-            'param_count' => 1,
+            'trace' => [
+                $dumpframe + [
+                    'file' => Php56TestClass::DUMP_FILE,
+                    'line' => Php56TestClass::DUMP_LINE + 2,
+                ],
+                ...$basetrace,
+            ],
+            'args' => [1],
             'expect' => [
                 'params' => [
                     [
                         'name' => '$x',
                         'path' => '$x',
                         'expression' => false,
+                        'literal' => false,
+                        'new_without_parens' => false,
                     ],
                 ],
                 'modifiers' => [],
@@ -873,108 +1063,76 @@ class KintTest extends KintTestCase
                     'line' => Php56TestClass::DUMP_LINE + 2,
                 ],
                 'caller' => $basetrace[0],
-                'trace' => \array_merge(
-                    [
-                        $dumpframe + [
-                            'file' => Php56TestClass::DUMP_FILE,
-                            'line' => Php56TestClass::DUMP_LINE + 2,
-                        ],
+                'trace' => [
+                    $dumpframe + [
+                        'file' => Php56TestClass::DUMP_FILE,
+                        'line' => Php56TestClass::DUMP_LINE + 2,
                     ],
-                    $basetrace
-                ),
+                    ...$basetrace,
+                ],
             ],
         ];
 
         $data['multiple trace with unpack multiple match'] = $data['multiple trace with unpack one match'];
-        $data['multiple trace with unpack multiple match']['param_count'] = 2;
+        $data['multiple trace with unpack multiple match']['args'] = [1, 2];
         $data['multiple trace with unpack multiple match']['expect']['params'] = null;
 
         $data['multiple trace with unpack no match'] = $data['multiple trace with unpack one match'];
-        $data['multiple trace with unpack no match']['param_count'] = 0;
+        $data['multiple trace with unpack no match']['args'] = [];
         $data['multiple trace with unpack no match']['expect']['params'] = null;
+
+        $data['trace with associated unpack'] = $data['trace with unpack'];
+        $data['trace with associated unpack']['args'] = [1, 2, 'a' => 3, 'b' => 4];
+        $data['trace with associated unpack']['expect']['params'] = [
+            [
+                'name' => '$x',
+                'path' => '$x',
+                'expression' => false,
+                'literal' => false,
+                'new_without_parens' => false,
+            ],
+            [
+                'name' => '$y',
+                'path' => '$y',
+                'expression' => false,
+                'literal' => false,
+                'new_without_parens' => false,
+            ],
+            [
+                'name' => '$z[\'a\']',
+                'path' => '$z[\'a\']',
+                'expression' => false,
+                'literal' => false,
+                'new_without_parens' => false,
+            ],
+            [
+                'name' => '$z[\'b\']',
+                'path' => '$z[\'b\']',
+                'expression' => false,
+                'literal' => false,
+                'new_without_parens' => false,
+            ],
+        ];
+
+        $data['trace with double associated unpack'] = $data['trace with double unpack'];
+        $data['trace with double associated unpack']['args'] = ['a' => 3, 'b' => 4, 'c' => 5];
 
         return $data;
     }
 
     /**
      * @dataProvider getCallInfoProvider
+     *
      * @covers \Kint\Kint::getCallInfo
      * @covers \Kint\Kint::getSingleCall
      *
      * @param array $aliases
      * @param array $trace
-     * @param int   $param_count
+     * @param array $args
      * @param array $expect
      */
-    public function testGetCallInfo($aliases, $trace, $param_count, $expect)
+    public function testGetCallInfo($aliases, $trace, $args, $expect)
     {
-        $this->assertSame($expect, Kint::getCallInfo($aliases, $trace, $param_count));
-    }
-
-    public function pathProvider()
-    {
-        return [
-            'standard file' => [
-                'path' => __FILE__,
-                'expect' => '<tests>/KintTest.php',
-            ],
-            'standard dir' => [
-                'path' => __DIR__,
-                'expect' => '<tests>',
-            ],
-            'parent dir' => [
-                'path' => KINT_DIR,
-                'expect' => '<kint>',
-            ],
-            'sub file' => [
-                'path' => KINT_DIR.'/src//test',
-                'expect' => '<kint>/src/test',
-            ],
-            'common path' => [
-                'path' => \dirname(KINT_DIR).'/test/',
-                'expect' => '.../test',
-            ],
-            'root path' => [
-                'path' => '/',
-                'expect' => '/',
-            ],
-            'no common path' => [
-                'path' => '/asdfasdf/test/',
-                'expect' => '/asdfasdf/test',
-            ],
-        ];
-    }
-
-    /**
-     * @dataProvider pathProvider
-     * @covers \Kint\Kint::shortenPath
-     *
-     * @param string $path
-     * @param string $expect
-     */
-    public function testShortenPath($path, $expect)
-    {
-        Kint::$app_root_dirs = [
-            KINT_DIR => '<kint>',
-            KINT_DIR.'/test' => '<test>',
-            '' => '<Nothing!>',
-            __DIR__ => '<tests>',
-            KINT_DIR.'/tes' => '<tes>',
-        ];
-
-        $this->assertSame($expect, Kint::shortenPath($path));
-    }
-
-    /**
-     * @covers \Kint\Kint::getIdeLink
-     */
-    public function testGetIdeLink()
-    {
-        Kint::$file_link_format = '<a href="%f:%l">%f:%l</a>';
-
-        $file = \uniqid('', true);
-        $line = \uniqid('', true);
-
-        $this->assertSame('<a href="'.$file.':'.$line.'">'.$file.':'.$line.'</a>', Kint::getIdeLink($file, $line));
+        $this->assertSame($expect, Kint::getCallInfo($aliases, $trace, $args));
     }
 }

@@ -1,66 +1,76 @@
-if (typeof window.kintMicrotimeInitialized === 'undefined') {
-    window.kintMicrotimeInitialized = 1;
-    window.addEventListener('load', function () {
-        'use strict';
+import Kint from './kint.js';
 
-        var sums = {};
-        var microtimes = Array.prototype.slice.call(
-            document.querySelectorAll('[data-kint-microtime-group]'),
-            0
-        );
+export default class Microtime {
+    #window;
 
-        microtimes.forEach(function (el) {
-            if (!el.querySelector('.kint-microtime-lap')) {
-                return;
+    constructor(kint) {
+        if (!(kint instanceof Kint)) {
+            throw new Error('Invalid argument to Microtime.constructor()');
+        }
+
+        this.#window = kint.window;
+
+        kint.runOnInit(this.#setupMicrotimes.bind(this));
+    }
+
+    #setupMicrotimes() {
+        const sums = {};
+
+        const elements = this.#window.document.querySelectorAll('[data-kint-microtime-group]');
+        for (const elem of elements) {
+            const el = elem.querySelector('.kint-microtime-lap');
+
+            if (!el) {
+                continue;
             }
 
-            var group = el.getAttribute('data-kint-microtime-group');
-            var lap = parseFloat(el.querySelector('.kint-microtime-lap').innerHTML);
-            var avg = parseFloat(el.querySelector('.kint-microtime-avg').innerHTML);
+            const group = elem.dataset.kintMicrotimeGroup;
+            const lap = parseFloat(el.textContent);
+            const avg = parseFloat(elem.querySelector('.kint-microtime-avg').textContent);
 
-            if (typeof sums[group] === 'undefined') {
-                sums[group] = {};
-            }
-            if (typeof sums[group].min === 'undefined' || sums[group].min > lap) {
+            sums[group] ??= {
+                min: lap,
+                max: lap,
+                avg: avg,
+            };
+
+            if (sums[group].min > lap) {
                 sums[group].min = lap;
             }
-            if (typeof sums[group].max === 'undefined' || sums[group].max < lap) {
+            if (sums[group].max < lap) {
                 sums[group].max = lap;
             }
             sums[group].avg = avg;
-        });
+        }
 
-        microtimes.forEach(function (microtime) {
-            var el = microtime.querySelector('.kint-microtime-lap');
+        for (const elem of elements) {
+            const el = elem.querySelector('.kint-microtime-lap');
 
-            if (el === null) {
-                return;
+            if (!el) {
+                continue;
             }
 
-            var value = parseFloat(el.textContent);
-            var group = microtime.dataset.kintMicrotimeGroup;
-            var avg = sums[group].avg;
-            var max = sums[group].max;
-            var min = sums[group].min;
-            var ratio;
+            const lap = parseFloat(el.textContent);
+            const group = sums[elem.dataset.kintMicrotimeGroup];
 
-            microtime.querySelector('.kint-microtime-avg').textContent = avg;
+            elem.querySelector('.kint-microtime-avg').textContent = group.avg;
 
-            if (value === avg && value === min && value === max) {
-                return; // Only one result, no need to color
+            if (lap === group.min && lap === group.max) {
+                continue; // Only one result, no need to color
             }
 
-            if (value > avg) {
-                ratio = (value - avg) / (max - avg);
+            elem.classList.add('kint-microtime-js');
+
+            if (lap > group.avg) {
+                const ratio = (lap - group.avg) / (group.max - group.avg);
                 el.style.background = 'hsl(' + (40 - 40 * ratio) + ', 100%, 65%)';
             } else {
-                if (avg === min) {
-                    ratio = 0;
-                } else {
-                    ratio = (avg - value) / (avg - min);
+                let ratio = 0;
+                if (group.avg !== group.min) {
+                    ratio = (group.avg - lap) / (group.avg - group.min);
                 }
                 el.style.background = 'hsl(' + (40 + 80 * ratio) + ', 100%, 65%)';
             }
-        });
-    });
+        }
+    }
 }
